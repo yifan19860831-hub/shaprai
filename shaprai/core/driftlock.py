@@ -130,7 +130,7 @@ class DriftLock:
         if not template_path_obj.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
 
-        with open(template_path_obj, "r") as f:
+        with open(template_path_obj, "r", encoding="utf-8") as f:
             template_data = yaml.safe_load(f)
 
         driftlock_config = template_data.get("driftlock", {})
@@ -391,4 +391,4 @@ if __name__ == "__main__":
         )
 
     print(f"\nDrift history: {driftlock.get_drift_history()}")
-    print("\n✓ DriftLock test complete!")
+    print("\n[OK] DriftLock test complete!")
