@@ -18,6 +18,7 @@ from shaprai.core.fleet_manager import FleetManager
 from shaprai.core.template_engine import list_templates, load_template, fork_template
 from shaprai.sanctuary.educator import SanctuaryEducator
 from shaprai.sanctuary.quality_gate import QualityGate, ELYAN_CLASS_THRESHOLD
+from shaprai.training.sft_generator import SFTDataGenerator, load_agent_template
 
 
 SHAPRAI_HOME = Path.home() / ".shaprai"
@@ -361,6 +362,106 @@ def template_fork(source: str, new_name: str, model: Optional[str]) -> None:
 
     save_template(new_tmpl, str(new_path))
     click.echo(f"Template '{new_name}' forked from '{source}' at {new_path}")
+
+
+# --------------------------------------------------------------------------- #
+#  shaprai generate-sft
+# --------------------------------------------------------------------------- #
+
+@main.command("generate-sft")
+@click.option(
+    "--template", "-t",
+    required=True,
+    help="Path to personality template (YAML/JSON) or agent template",
+)
+@click.option(
+    "--output", "-o",
+    default="train.jsonl",
+    help="Output JSONL file path",
+)
+@click.option(
+    "--count", "-c",
+    type=int,
+    default=1000,
+    help="Number of examples to generate",
+)
+@click.option(
+    "--include-contrast",
+    is_flag=True,
+    help="Include contrast pairs (good/bad examples)",
+)
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    help="Verbose output",
+)
+def generate_sft(
+    template: str,
+    output: str,
+    count: int,
+    include_contrast: bool,
+    verbose: bool,
+) -> None:
+    """Generate SFT training data from a personality template.
+
+    Creates ChatML-formatted JSONL training data compatible with
+    HuggingFace TRL SFTTrainer. Supports identity-weighted sampling
+    where personality-defining examples appear 3-5x more frequently.
+
+    Examples:
+
+    \b
+        shaprai generate-sft --template templates/bounty_hunter.yaml -o train.jsonl -c 1000
+        shaprai generate-sft --template my_agent.yaml --include-contrast -v
+    """
+    import logging
+
+    if verbose:
+        logging.basicConfig(level=logging.INFO)
+
+    # Resolve template path
+    template_path = Path(template)
+    if not template_path.is_absolute():
+        # Try relative to current directory first
+        if not template_path.exists():
+            # Try relative to templates directory
+            template_path = TEMPLATES_DIR / template
+            if not template_path.exists():
+                # Try with .yaml extension
+                template_path = TEMPLATES_DIR / f"{template}.yaml"
+
+    if not template_path.exists():
+        click.echo(f"Error: Template '{template}' not found.", err=True)
+        sys.exit(1)
+
+    # Try loading as agent template first, fall back to personality template
+    try:
+        personality_template = load_agent_template(str(template_path))
+        click.echo(f"Loaded agent template: {personality_template.name}")
+    except Exception:
+        personality_template = None
+
+    generator = SFTDataGenerator(template=personality_template)
+
+    click.echo(f"Generating {count} SFT training examples...")
+    click.echo(f"Template: {template_path.name}")
+    click.echo(f"Output: {output}")
+    click.echo(f"Include contrast pairs: {include_contrast}")
+
+    stats = generator.generate_and_save(
+        count=count,
+        output_path=output,
+        include_contrast_pairs=include_contrast,
+    )
+
+    click.echo(f"\n[OK] Generated {stats['total_examples']} examples")
+    click.echo(f"  Output file: {stats['output_path']}")
+    click.echo(f"  Template: {stats['template']}")
+    click.echo(f"  Average weight: {stats['average_weight']:.2f}")
+    click.echo(f"  Identity weight: {stats['identity_weight']}")
+    click.echo(f"\n  Category distribution:")
+    for cat, cat_count in stats['category_distribution'].items():
+        click.echo(f"    {cat}: {cat_count}")
 
 
 if __name__ == "__main__":
