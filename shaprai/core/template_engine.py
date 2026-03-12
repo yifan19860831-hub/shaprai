@@ -9,11 +9,17 @@ model, personality, capabilities, ethics, and DriftLock configuration.
 from __future__ import annotations
 
 import copy
+import logging
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+from shaprai.integrations.rustchain import RUSTCHAIN_DEFAULT_URL
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -144,3 +150,221 @@ def list_templates(templates_dir: str) -> List[AgentTemplate]:
             continue  # Skip malformed templates
 
     return templates
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Template Marketplace Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class MarketplaceTemplate:
+    """Template listing in the marketplace with pricing info."""
+    name: str
+    author: str
+    description: str
+    price_rtc: float
+    version: str
+    capabilities: List[str] = field(default_factory=list)
+    downloads: int = 0
+    rating: float = 0.0
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+
+def publish_template(
+    template: AgentTemplate,
+    author: str,
+    price_rtc: float,
+    marketplace_dir: str,
+) -> MarketplaceTemplate:
+    """Publish a template to the marketplace.
+
+    Args:
+        template: The AgentTemplate to publish.
+        author: Author/publisher name.
+        price_rtc: Price in RTC tokens.
+        marketplace_dir: Directory to store marketplace listings.
+
+    Returns:
+        MarketplaceTemplate instance with listing info.
+    """
+    marketplace_path = Path(marketplace_dir)
+    marketplace_path.mkdir(parents=True, exist_ok=True)
+
+    # Save the template YAML
+    template_file = marketplace_path / f"{template.name}.yaml"
+    save_template(template, str(template_file))
+
+    # Create marketplace listing
+    listing = MarketplaceTemplate(
+        name=template.name,
+        author=author,
+        description=template.description,
+        price_rtc=price_rtc,
+        version=template.version,
+        capabilities=template.capabilities,
+    )
+
+    # Save listing metadata
+    listing_file = marketplace_path / f"{template.name}.listing.yaml"
+    with open(listing_file, "w") as f:
+        yaml.dump(asdict(listing), f, default_flow_style=False)
+
+    return listing
+
+
+def purchase_template(
+    template_name: str,
+    buyer_wallet: str,
+    marketplace_dir: str,
+    rustchain_url: str = RUSTCHAIN_DEFAULT_URL,
+) -> Optional[AgentTemplate]:
+    """Purchase a template from the marketplace.
+
+    Args:
+        template_name: Name of the template to purchase.
+        buyer_wallet: Buyer's RustChain wallet ID.
+        marketplace_dir: Marketplace directory.
+        rustchain_url: RustChain node URL for payment.
+
+    Returns:
+        Purchased AgentTemplate, or None if purchase failed.
+    """
+    marketplace_path = Path(marketplace_dir)
+    listing_file = marketplace_path / f"{template_name}.listing.yaml"
+    template_file = marketplace_path / f"{template_name}.yaml"
+
+    if not listing_file.exists() or not template_file.exists():
+        logger.error(f"Template '{template_name}' not found in marketplace")
+        return None
+
+    # Load listing to get price
+    with open(listing_file, "r") as f:
+        listing_data = yaml.safe_load(f)
+
+    price_rtc = listing_data.get("price_rtc", 0.0)
+    author = listing_data.get("author", "unknown")
+
+    # Process payment via RustChain
+    if price_rtc > 0:
+        payment_success = _process_template_payment(
+            buyer_wallet=buyer_wallet,
+            author_wallet=f"author-{author}",
+            amount_rtc=price_rtc,
+            template_name=template_name,
+            rustchain_url=rustchain_url,
+        )
+        if not payment_success:
+            logger.error("Template purchase payment failed")
+            return None
+
+    # Load and return the template
+    return load_template(str(template_file))
+
+
+def _process_template_payment(
+    buyer_wallet: str,
+    author_wallet: str,
+    amount_rtc: float,
+    template_name: str,
+    rustchain_url: str,
+) -> bool:
+    """Process RTC payment for template purchase.
+
+    Args:
+        buyer_wallet: Buyer's wallet ID.
+        author_wallet: Author's wallet ID.
+        amount_rtc: Payment amount in RTC.
+        template_name: Template being purchased.
+        rustchain_url: RustChain node URL.
+
+    Returns:
+        True if payment successful.
+    """
+    try:
+        import requests
+
+        payload = {
+            "from_wallet": buyer_wallet,
+            "to_wallet": author_wallet,
+            "amount_rtc": amount_rtc,
+            "memo": f"Template purchase: {template_name}",
+        }
+
+        response = requests.post(
+            f"{rustchain_url}/wallet/transfer/signed",
+            json=payload,
+            timeout=30,
+            verify=False,
+        )
+        return response.status_code == 200
+
+    except Exception as e:
+        logger.error("Template payment failed: %s", e)
+        return False
+
+
+def list_marketplace_templates(marketplace_dir: str) -> List[MarketplaceTemplate]:
+    """List all templates available in the marketplace.
+
+    Args:
+        marketplace_dir: Marketplace directory path.
+
+    Returns:
+        List of MarketplaceTemplate instances.
+    """
+    marketplace_path = Path(marketplace_dir)
+    if not marketplace_path.exists():
+        return []
+
+    templates = []
+    for listing_file in sorted(marketplace_path.glob("*.listing.yaml")):
+        try:
+            with open(listing_file, "r") as f:
+                data = yaml.safe_load(f)
+            templates.append(MarketplaceTemplate(**data))
+        except Exception:
+            continue  # Skip malformed listings
+
+    return templates
+
+
+def rate_template(
+    template_name: str,
+    rating: float,
+    marketplace_dir: str,
+) -> bool:
+    """Rate a purchased template.
+
+    Args:
+        template_name: Template to rate.
+        rating: Rating score (1.0-5.0).
+        marketplace_dir: Marketplace directory.
+
+    Returns:
+        True if rating was recorded successfully.
+    """
+    marketplace_path = Path(marketplace_dir)
+    listing_file = marketplace_path / f"{template_name}.listing.yaml"
+
+    if not listing_file.exists():
+        return False
+
+    with open(listing_file, "r") as f:
+        data = yaml.safe_load(f)
+
+    # Update rating (simple average for now)
+    current_rating = data.get("rating", 0.0)
+    current_downloads = data.get("downloads", 0)
+
+    # New average = (old_sum + new_rating) / (count + 1)
+    old_sum = current_rating * current_downloads
+    new_count = current_downloads + 1
+    data["rating"] = round((old_sum + rating) / new_count, 2)
+    data["downloads"] = new_count
+    data["updated_at"] = time.time()
+
+    with open(listing_file, "w") as f:
+        yaml.dump(data, f, default_flow_style=False)
+
+    return True

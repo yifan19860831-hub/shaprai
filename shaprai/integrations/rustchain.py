@@ -24,6 +24,8 @@ RUSTCHAIN_DEFAULT_URL = "https://50.28.86.131"
 SANCTUARY_FEE = 0.01        # Fee to enter the Sanctuary
 GRADUATION_FEE = 0.05       # Fee to graduate (certification cost)
 JOB_POSTING_FEE = 0.001     # Fee to post a job
+TEMPLATE_LISTING_FEE = 0.005  # Fee to list a template on marketplace
+TEMPLATE_SALE_ROYALTY = 0.02  # 2% royalty on template sales (goes to platform)
 
 
 def create_agent_wallet(
@@ -233,3 +235,148 @@ def check_graduation_fee(
     """
     balance = get_balance(wallet_id, rustchain_url)
     return balance >= GRADUATION_FEE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Template Marketplace RTC Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pay_template_listing_fee(
+    wallet_id: str,
+    template_name: str,
+    rustchain_url: str = RUSTCHAIN_DEFAULT_URL,
+) -> bool:
+    """Pay the fee to list a template on the marketplace.
+
+    Args:
+        wallet_id: Seller's wallet ID.
+        template_name: Name of the template being listed.
+        rustchain_url: RustChain node URL.
+
+    Returns:
+        True if payment successful.
+    """
+    try:
+        import requests
+
+        payload = {
+            "from_wallet": wallet_id,
+            "to_wallet": "marketplace-treasury",
+            "amount_rtc": TEMPLATE_LISTING_FEE,
+            "memo": f"Template listing fee: {template_name}",
+        }
+
+        response = requests.post(
+            f"{rustchain_url}/wallet/transfer/signed",
+            json=payload,
+            timeout=30,
+            verify=False,
+        )
+        return response.status_code == 200
+
+    except Exception as e:
+        logger.error("Template listing fee payment failed: %s", e)
+        return False
+
+
+def process_template_sale(
+    buyer_wallet: str,
+    seller_wallet: str,
+    template_name: str,
+    price_rtc: float,
+    rustchain_url: str = RUSTCHAIN_DEFAULT_URL,
+) -> bool:
+    """Process a template sale with automatic royalty split.
+
+    Split:
+    - Seller receives: price_rtc * (1 - TEMPLATE_SALE_ROYALTY)
+    - Platform receives: price_rtc * TEMPLATE_SALE_ROYALTY
+
+    Args:
+        buyer_wallet: Buyer's wallet ID.
+        seller_wallet: Seller's wallet ID.
+        template_name: Template being sold.
+        price_rtc: Sale price in RTC.
+        rustchain_url: RustChain node URL.
+
+    Returns:
+        True if sale processed successfully.
+    """
+    try:
+        import requests
+
+        # Calculate split
+        platform_fee = price_rtc * TEMPLATE_SALE_ROYALTY
+        seller_amount = price_rtc - platform_fee
+
+        # Payment to seller
+        seller_payload = {
+            "from_wallet": buyer_wallet,
+            "to_wallet": seller_wallet,
+            "amount_rtc": seller_amount,
+            "memo": f"Template purchase: {template_name}",
+        }
+
+        # Payment to platform (royalty)
+        platform_payload = {
+            "from_wallet": buyer_wallet,
+            "to_wallet": "marketplace-treasury",
+            "amount_rtc": platform_fee,
+            "memo": f"Template royalty: {template_name}",
+        }
+
+        # Execute both transfers
+        seller_response = requests.post(
+            f"{rustchain_url}/wallet/transfer/signed",
+            json=seller_payload,
+            timeout=30,
+            verify=False,
+        )
+
+        if seller_response.status_code != 200:
+            logger.error("Seller payment failed")
+            return False
+
+        platform_response = requests.post(
+            f"{rustchain_url}/wallet/transfer/signed",
+            json=platform_payload,
+            timeout=30,
+            verify=False,
+        )
+
+        return platform_response.status_code == 200
+
+    except Exception as e:
+        logger.error("Template sale processing failed: %s", e)
+        return False
+
+
+def get_template_sales_history(
+    wallet_id: str,
+    rustchain_url: str = RUSTCHAIN_DEFAULT_URL,
+) -> List[Dict[str, Any]]:
+    """Get sales history for a template seller.
+
+    Args:
+        wallet_id: Seller's wallet ID.
+        rustchain_url: RustChain node URL.
+
+    Returns:
+        List of sales records with template name, amount, timestamp.
+    """
+    try:
+        import requests
+
+        response = requests.get(
+            f"{rustchain_url}/wallet/transactions/{wallet_id}?type=sale",
+            timeout=15,
+            verify=False,
+        )
+
+        if response.status_code == 200:
+            return response.json().get("transactions", [])
+        return []
+
+    except Exception as e:
+        logger.error("Failed to get sales history: %s", e)
+        return []
