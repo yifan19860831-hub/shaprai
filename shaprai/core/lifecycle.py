@@ -23,14 +23,21 @@ from shaprai.core.template_engine import AgentTemplate
 
 
 class AgentState(Enum):
-    """Agent lifecycle states."""
+    """Agent lifecycle states.
+    
+    Each agent progresses through these states in order:
+    CREATED → TRAINING → SANCTUARY → GRADUATED → DEPLOYED → RETIRED
+    
+    States represent major milestones in an agent's development and deployment.
+    Transitions are tracked in the manifest's state_history for audit purposes.
+    """
 
-    CREATED = "created"
-    TRAINING = "training"
-    SANCTUARY = "sanctuary"
-    DEPLOYED = "deployed"
-    GRADUATED = "graduated"
-    RETIRED = "retired"
+    CREATED = "created"  # Initial state after agent creation from template
+    TRAINING = "training"  # Undergoing SFT, DPO, and DriftLock training phases
+    SANCTUARY = "sanctuary"  # Education program for PR etiquette and ethics
+    DEPLOYED = "deployed"  # Actively running on one or more platforms
+    GRADUATED = "graduated"  # Completed Sanctuary, ready for deployment
+    RETIRED = "retired"  # Terminal state, agent is no longer active
 
 
 def create_agent(
@@ -88,7 +95,27 @@ def create_agent(
 
 
 def _load_manifest(name: str, agents_dir: Path) -> Dict[str, Any]:
-    """Load an agent's manifest from disk."""
+    """Load an agent's manifest from disk.
+    
+    Internal helper function used by all lifecycle operations.
+    Reads the YAML manifest file and returns it as a dictionary.
+    
+    Args:
+        name: Agent identifier (also the subdirectory name).
+        agents_dir: Base directory containing agent subdirectories.
+    
+    Returns:
+        Parsed manifest dictionary with all agent metadata.
+    
+    Raises:
+        FileNotFoundError: If the agent directory or manifest doesn't exist.
+    
+    Example:
+        >>> agents_dir = Path.home() / ".shaprai" / "agents"
+        >>> manifest = _load_manifest("bounty-hunter-01", agents_dir)
+        >>> print(manifest["state"])
+        'deployed'
+    """
     manifest_path = agents_dir / name / "manifest.yaml"
     if not manifest_path.exists():
         raise FileNotFoundError(f"Agent '{name}' not found at {agents_dir / name}")
@@ -97,7 +124,24 @@ def _load_manifest(name: str, agents_dir: Path) -> Dict[str, Any]:
 
 
 def _save_manifest(name: str, manifest: Dict[str, Any], agents_dir: Path) -> None:
-    """Save an agent's manifest to disk."""
+    """Save an agent's manifest to disk.
+    
+    Internal helper function that persists manifest changes.
+    Automatically updates the 'updated_at' timestamp before writing.
+    
+    Args:
+        name: Agent identifier.
+        manifest: Manifest dictionary to serialize and save.
+        agents_dir: Base directory containing agent subdirectories.
+    
+    Side Effects:
+        - Updates manifest['updated_at'] to current timestamp
+        - Overwrites existing manifest.yaml file
+    
+    Note:
+        Uses YAML format with preserved key order (sort_keys=False)
+        for human-readable output.
+    """
     manifest["updated_at"] = time.time()
     manifest_path = agents_dir / name / "manifest.yaml"
     with open(manifest_path, "w") as f:
@@ -110,14 +154,34 @@ def transition_state(
     agents_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Transition an agent to a new lifecycle state.
-
+    
+    Core state machine function that moves an agent between lifecycle states.
+    Records the transition in state_history for audit and analytics.
+    
+    Valid state transitions (enforced by convention, not code):
+        CREATED → TRAINING → SANCTUARY → GRADUATED → DEPLOYED → RETIRED
+    
     Args:
-        name: Agent identifier.
-        new_state: Target state.
-        agents_dir: Base directory for agents.
-
+        name: Unique agent identifier.
+        new_state: Target AgentState enum value.
+        agents_dir: Base directory for agent storage. 
+            Defaults to ~/.shaprai/agents if not provided.
+    
     Returns:
-        Updated manifest.
+        Updated manifest dictionary with new state and transition record.
+    
+    Side Effects:
+        - Updates manifest['state'] to new_state.value
+        - Appends transition record to manifest['state_history']
+        - Updates manifest['updated_at'] timestamp
+        - Writes changes to disk
+    
+    Example:
+        >>> manifest = transition_state("agent-001", AgentState.TRAINING)
+        >>> print(manifest["state"])
+        'training'
+        >>> print(len(manifest["state_history"]))
+        1
     """
     if agents_dir is None:
         agents_dir = Path.home() / ".shaprai" / "agents"
@@ -140,14 +204,39 @@ def deploy_agent(
     agents_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Deploy an agent to the specified platforms.
-
+    
+    Marks an agent as deployed and records which platforms it's running on.
+    An agent can be deployed to multiple platforms simultaneously.
+    
+    Supported platforms:
+        - github: GitHub PR reviews, issue comments, bounty hunting
+        - bottube: AI video content creation and engagement
+        - moltbook: Social media interactions
+        - discord: Community support and moderation
+        - telegram: Messaging and notifications
+    
     Args:
-        name: Agent identifier.
+        name: Unique agent identifier.
         platforms: List of platform names to deploy to.
-        agents_dir: Base directory for agents.
-
+            Example: ["github", "bottube"]
+        agents_dir: Base directory for agent storage.
+            Defaults to ~/.shaprai/agents if not provided.
+    
     Returns:
-        Updated manifest with deployment record.
+        Updated manifest with deployment record and new state.
+    
+    Side Effects:
+        - Sets manifest['state'] to 'deployed'
+        - Updates manifest['platforms'] to provided list
+        - Appends deployment record to manifest['deployment_history']
+        - Writes changes to disk
+    
+    Example:
+        >>> manifest = deploy_agent("bounty-hunter-01", ["github", "bottube"])
+        >>> print(manifest["platforms"])
+        ['github', 'bottube']
+        >>> print(manifest["state"])
+        'deployed'
     """
     if agents_dir is None:
         agents_dir = Path.home() / ".shaprai" / "agents"
@@ -168,13 +257,33 @@ def retire_agent(
     agents_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Retire an agent, removing it from active duty.
-
+    
+    Moves an agent to the RETIRED terminal state. Retired agents
+    are no longer active on any platform but their history is
+    preserved for reference and analytics.
+    
+    Common reasons for retirement:
+        - Agent has completed its mission/objectives
+        - Agent is being replaced by a newer version
+        - Resource optimization (reducing active agent count)
+        - Ethical concerns or behavioral issues
+    
     Args:
-        name: Agent identifier.
-        agents_dir: Base directory for agents.
-
+        name: Unique agent identifier.
+        agents_dir: Base directory for agent storage.
+            Defaults to ~/.shaprai/agents if not provided.
+    
     Returns:
-        Updated manifest.
+        Updated manifest with state set to 'retired'.
+    
+    Note:
+        Retirement is a terminal state - agents cannot be
+        un-retired. Create a new agent if needed.
+    
+    Example:
+        >>> manifest = retire_agent("old-agent-001")
+        >>> print(manifest["state"])
+        'retired'
     """
     return transition_state(name, AgentState.RETIRED, agents_dir)
 
@@ -184,13 +293,41 @@ def get_agent_status(
     agents_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Get the current status of an agent.
-
+    
+    Reads and returns the agent's manifest without modification.
+    Useful for checking agent state, configuration, and history.
+    
     Args:
-        name: Agent identifier.
-        agents_dir: Base directory for agents.
-
+        name: Unique agent identifier.
+        agents_dir: Base directory for agent storage.
+            Defaults to ~/.shaprai/agents if not provided.
+    
     Returns:
-        Agent manifest dictionary.
+        Complete manifest dictionary containing:
+        - name: Agent identifier
+        - state: Current lifecycle state
+        - template: Template name used for creation
+        - model: Model configuration
+        - personality: Personality traits
+        - capabilities: List of capabilities
+        - platforms: Deployed platforms
+        - ethics_profile: Ethics framework
+        - driftlock: DriftLock configuration
+        - created_at: Creation timestamp
+        - updated_at: Last update timestamp
+        - state_history: List of state transitions
+        - deployment_history: List of deployments
+        - training_history: List of training phases (if any)
+    
+    Raises:
+        FileNotFoundError: If the agent doesn't exist.
+    
+    Example:
+        >>> status = get_agent_status("bounty-hunter-01")
+        >>> print(f"State: {status['state']}")
+        State: deployed
+        >>> print(f"Platforms: {status['platforms']}")
+        Platforms: ['github', 'bottube']
     """
     if agents_dir is None:
         agents_dir = Path.home() / ".shaprai" / "agents"
